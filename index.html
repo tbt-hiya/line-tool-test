@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>w-next 受付</title>
+<style>
+  :root { --green:#06C755; --ink:#1c1f23; --sub:#5f6670; --line:#e3e6ea; --bg:#f6f7f9; --err:#c62828; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; color:var(--ink); background:var(--bg); line-height:1.6; }
+  main { max-width:480px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  p.lead { color:var(--sub); margin:0 0 20px; font-size:14px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:20px 16px; }
+  label { display:block; font-size:14px; font-weight:600; margin:16px 0 6px; }
+  label:first-child { margin-top:0; }
+  .req { color:var(--err); font-size:12px; margin-left:4px; }
+  input, select, textarea { width:100%; font-size:16px; padding:11px 12px; border:1px solid #cfd4da; border-radius:8px; background:#fff; color:var(--ink); }
+  textarea { min-height:84px; resize:vertical; }
+  .err { color:var(--err); font-size:13px; margin-top:4px; min-height:0; }
+  button { width:100%; margin-top:24px; padding:15px; font-size:17px; font-weight:700; color:#fff; background:var(--green); border:0; border-radius:10px; }
+  button:disabled { opacity:.5; }
+  .center { text-align:center; padding:48px 8px; }
+  .spinner { width:32px; height:32px; border:3px solid var(--line); border-top-color:var(--green); border-radius:50%; margin:0 auto 16px; animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .hidden { display:none; }
+  .note { font-size:12px; color:var(--sub); margin-top:16px; }
+</style>
+</head>
+<body>
+<main>
+  <section id="loading" class="center"><div class="spinner"></div><p>読み込み中です…</p></section>
+
+  <section id="done" class="center hidden">
+    <h1 id="doneTitle">ありがとうございます</h1>
+    <p class="lead" id="doneText"></p>
+    <button id="toChat" type="button">LINEのトークに戻る</button>
+  </section>
+
+  <section id="formView" class="hidden">
+    <h1>仮審査のお申し込み（テスト）</h1>
+    <p class="lead">1分ほどで入力できます。審査結果はLINEでお知らせします。</p>
+    <form id="form" class="card" novalidate>
+      <label>お名前<span class="req">必須</span></label>
+      <input name="氏名" autocomplete="name" placeholder="例）山田 太郎">
+      <div class="err" data-for="氏名"></div>
+      <label>ふりがな</label>
+      <input name="ふりがな" placeholder="例）やまだ たろう">
+      <label>電話番号<span class="req">必須</span></label>
+      <input name="電話番号" type="tel" inputmode="tel" autocomplete="tel" placeholder="例）09012345678">
+      <div class="err" data-for="電話番号"></div>
+      <label>生年月日</label>
+      <input name="生年月日" type="date">
+      <label>ご職業</label>
+      <select name="職業"><option value="">選択してください</option><option>正社員</option><option>契約・派遣社員</option><option>パート・アルバイト</option><option>自営業・個人事業主</option><option>会社役員</option><option>その他</option></select>
+      <label>勤続年数</label>
+      <select name="勤続年数"><option value="">選択してください</option><option>1年未満</option><option>1〜3年</option><option>3〜5年</option><option>5年以上</option></select>
+      <label>税込年収（万円）</label>
+      <input name="税込年収" type="number" inputmode="numeric" placeholder="例）350">
+      <label>希望車種</label>
+      <input name="希望車種" placeholder="例）エブリイ、軽バンなんでも">
+      <label>ご予算</label>
+      <select name="予算"><option value="">選択してください</option><option>50万円以下</option><option>50〜100万円</option><option>100〜150万円</option><option>150〜200万円</option><option>200万円以上</option><option>未定</option></select>
+      <label>ご質問・ご要望</label>
+      <textarea name="ご要望"></textarea>
+      <button id="submit" type="submit">送信する</button>
+      <div class="err" id="submitErr"></div>
+      <p class="note">これはテスト用のフォームです。</p>
+    </form>
+  </section>
+</main>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+const CONF = {
+  LIFF_ID: '2011873300-jeZJn9IC',
+  GAS_URL: 'https://script.google.com/macros/s/AKfycbyxq3Rq5EFNHd2C6DO-1bXpyWzDLbqItbAP3AXHfixcY9xwThQkGqBnqoA_GGZVIow/exec',
+  BOT_ID: '@145kftyf',
+};
+const $ = id => document.getElementById(id);
+const show = id => { ['loading','done','formView'].forEach(x => $(x).classList.toggle('hidden', x !== id)); };
+const ADD_URL = 'https://line.me/R/ti/p/' + encodeURIComponent(CONF.BOT_ID);
+const CHAT_URL = 'https://line.me/R/oaMessage/' + encodeURIComponent(CONF.BOT_ID) + '/';
+
+function params() {
+  const p = {}; new URLSearchParams(location.search).forEach((v, k) => { p[k] = v; }); return p;
+}
+
+async function post(data, timeoutMs) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs || 15000);
+  try {
+    const res = await fetch(CONF.GAS_URL, { method: 'POST', body: JSON.stringify(Object.assign({ type: 'liff' }, data)), signal: ctrl.signal });
+    return await res.json();
+  } finally { clearTimeout(t); }
+}
+
+function done(title, text) {
+  $('doneTitle').textContent = title; $('doneText').textContent = text; show('done');
+}
+
+$('toChat').addEventListener('click', () => {
+  if (liff.isInClient()) liff.closeWindow(); else location.href = CHAT_URL;
+});
+
+async function main() {
+  await liff.init({ liffId: CONF.LIFF_ID });
+  if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+  const p = params();
+  const idToken = liff.getIDToken();
+  let isFriend = false;
+  try { isFriend = (await liff.getFriendship()).friendFlag; } catch (e) {}
+
+  if (p.p === 'form') { setupForm(idToken); show('formView'); return; }
+
+  // 受付：経路を記録してから、友だち追加の画面へ
+  try { await post({ action: 'entry', idToken, params: p, isFriend }, 8000); } catch (e) {}
+  if (isFriend) {
+    done('友だち追加済みです', 'このままトークでご相談いただけます。');
+    if (!liff.isInClient()) location.href = CHAT_URL;
+  } else {
+    location.href = ADD_URL;
+  }
+}
+
+function setupForm(idToken) {
+  const form = $('form');
+  form.addEventListener('input', e => { const el = form.querySelector('.err[data-for="' + e.target.name + '"]'); if (el) el.textContent = ''; });
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const answers = {}; new FormData(form).forEach((v, k) => { answers[k] = String(v).trim(); });
+    let ok = true;
+    if (!answers['氏名']) { form.querySelector('[data-for="氏名"]').textContent = 'お名前を入力してください'; ok = false; }
+    if (!/^0\d{9,10}$/.test(answers['電話番号'].replace(/[-\s]/g, ''))) { form.querySelector('[data-for="電話番号"]').textContent = '電話番号を数字で入力してください'; ok = false; }
+    if (!ok) return;
+    answers['電話番号'] = answers['電話番号'].replace(/[-\s]/g, '');
+    $('submit').disabled = true; $('submit').textContent = '送信中…'; $('submitErr').textContent = '';
+    try {
+      const r = await post({ action: 'form', idToken: liff.getIDToken() || idToken, answers, params: params() });
+      if (!r.ok) throw new Error(r.error || 'error');
+      done('送信しました', '内容を確認して、担当者からLINEでご連絡します。');
+    } catch (err) {
+      $('submit').disabled = false; $('submit').textContent = '送信する';
+      $('submitErr').textContent = '送信できませんでした。電波の良いところで、もう一度お試しください。';
+    }
+  });
+}
+
+main().catch(err => { done('うまく開けませんでした', 'LINEアプリから開き直してください。'); console.error(err); });
+</script>
+</body>
+</html>
