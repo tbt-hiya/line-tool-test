@@ -43,6 +43,13 @@
   @keyframes spin { to { transform:rotate(360deg); } }
   .hidden { display:none; }
   .note { font-size:12px; color:var(--sub); margin-top:16px; }
+  .okmark { display:none; color:var(--green); font-weight:700; font-size:13px; margin-left:8px; white-space:nowrap; }
+  .field.ok .okmark { display:inline-block; }
+  .field.ok input[type=text], .field.ok input[type=tel], .field.ok input[type=email], .field.ok .file { border-color:var(--green); }
+  .zipmsg { font-size:12px; color:var(--sub); margin-top:4px; }
+  .zipmsg:empty { display:none; }
+  #reqCount { position:sticky; top:0; z-index:5; margin:0 -16px 8px; padding:8px 16px; font-size:13px; font-weight:600; color:var(--sub); background:rgba(246,247,249,.95); border-bottom:1px solid var(--line); }
+  #reqCount.all { color:var(--green); }
   .progress { font-size:14px; color:var(--sub); text-align:center; margin-top:10px; }
 </style>
 </head>
@@ -59,6 +66,7 @@
   <section id="formView" class="hidden">
     <h1>ローン仮審査ヒアリングフォーム（テスト）</h1>
     <p class="lead">ローン審査を進めるにあたり、必要情報のご入力をお願いいたします。項目が少し多くお手数をおかけしますが、事前に詳細確認をさせていただくことで<br>・月々のお支払い調整<br>・ご契約までの流れ<br>をスムーズに進められます。<br>入力途中の内容は、この端末に一時保存されます。</p>
+    <div id="reqCount"></div>
     <form id="form" class="card" novalidate></form>
   </section>
 </main>
@@ -80,7 +88,7 @@ const FIELDS = [
   { k:'氏名', t:'氏名（漢字）', type:'text', req:true, ph:'例）山田 太郎', ac:'name' },
   { k:'ふりがな', t:'氏名（ふりがな）', type:'text', req:true, ph:'例）やまだ たろう' },
   { k:'生年月日', t:'生年月日', type:'date8', req:true, help:'8桁の数字で入力してください（例：1990年4月5日 → 19900405）' },
-  { k:'郵便番号', t:'郵便番号', type:'zip', req:true, ph:'例）9000001' },
+  { k:'郵便番号', t:'郵便番号', type:'zip', req:true, ph:'例）9000001', help:'7桁を入れると、ご住所が自動で入ります' },
   { k:'住所', t:'ご住所（免許証通り・建物名号室まで）', type:'text', req:true, ac:'street-address' },
   { k:'電話番号', t:'電話番号', type:'tel', req:true, ph:'例）09012345678', ac:'tel' },
   { k:'メールアドレス', t:'メールアドレス', type:'email', req:true, ac:'email' },
@@ -185,7 +193,7 @@ const picked = {};   // 項目名 -> 選ばれた写真（File）
 
 function fieldHtml(f, i) {
   if (f.type === 'h') return '<h2>' + esc(f.t) + '</h2>';
-  const badge = f.req ? '<span class="req">必須</span>' : '<span class="opt">任意</span>';
+  const badge = (f.req ? '<span class="req">必須</span>' : '<span class="opt">任意</span>') + (f.req ? '<span class="okmark">✓ OK</span>' : '');
   const help = f.help ? '<div class="help">' + esc(f.help) + '</div>' : '';
   const id = 'f' + i, name = esc(f.k);
   let body = '';
@@ -208,7 +216,8 @@ function fieldHtml(f, i) {
     }[f.type] || 'type="text"';
     body = '<input id="' + id + '" name="' + name + '" ' + attrs + (f.ph ? ' placeholder="' + esc(f.ph) + '"' : '') + (f.ac ? ' autocomplete="' + f.ac + '"' : '') + '>';
   }
-  return '<div class="field" data-k="' + name + '"><label for="' + id + '">' + esc(f.t) + badge + '</label>' + help + body + '<div class="err"></div></div>';
+  const extra = f.type === 'zip' ? '<div class="zipmsg"></div>' : '';
+  return '<div class="field" data-k="' + name + '"><label for="' + id + '">' + esc(f.t) + badge + '</label>' + help + body + extra + '<div class="err"></div></div>';
 }
 
 function setupForm() {
@@ -231,13 +240,22 @@ function setupForm() {
       const img = document.createElement('img'); img.src = url; img.alt = '';
       img.onerror = () => { img.replaceWith(Object.assign(document.createElement('div'), { className: 'ph', textContent: '選択済' })); };
       old.replaceWith(img);
-      setErr(input.name, '');
+      refreshField(form, byKey[input.name], true);
     });
   });
 
+  const byKey = {}; FIELDS.forEach(f => { if (f.k) byKey[f.k] = f; });
   restoreDraft(form);
-  form.addEventListener('input', e => { if (e.target.name) setErr(e.target.name, ''); saveDraft(form); });
-  form.addEventListener('change', () => saveDraft(form));
+  FIELDS.forEach(f => { if (f.k) refreshField(form, f, false); });
+  form.addEventListener('input', e => {
+    const f = byKey[e.target.name]; if (!f) return;
+    refreshField(form, f, f.type === 'radio' || f.type === 'check');
+    if (f.k === '郵便番号') lookupZip(form);
+    if (f.k === '住所' && e.target.value.trim() !== zipFilled) zipFilled = '';
+    saveDraft(form);
+  });
+  form.addEventListener('change', e => { const f = byKey[e.target.name]; if (f && f.type !== 'file') refreshField(form, f, true); saveDraft(form); });
+  form.addEventListener('focusout', e => { const f = byKey[e.target.name]; if (f && f.type !== 'file') refreshField(form, f, true); });
   form.addEventListener('submit', e => { e.preventDefault(); submit(form); });
 }
 
@@ -259,36 +277,101 @@ function collect(form) {
   return a;
 }
 
+// 1つの項目を確かめる。{ err: エラー文（なければ ''）, val: 整えた値, empty: 未入力か }
+function checkOne(f, v) {
+  if (f.type === 'file') v = picked[f.k];
+  if (!v) {
+    const err = !f.req ? '' : f.type === 'file' ? '写真を選んでください' : (f.type === 'radio' || f.type === 'check') ? '選択してください' : '入力してください';
+    return { err, val: '', empty: true };
+  }
+  if (f.type === 'file' || f.type === 'radio' || f.type === 'check' || f.type === 'textarea') return { err: '', val: v };
+  const h = toHalf(v);
+  if (f.type === 'num') {
+    if (!/^\d+$/.test(h)) return { err: '数字で入力してください', val: v };
+    if (+h < f.min || +h > f.max) return { err: f.min + '〜' + f.max + 'の数字で入力してください', val: v };
+    return { err: '', val: String(+h) };
+  }
+  if (f.type === 'tel') {
+    const d = h.replace(/[-\s()]/g, '');
+    return /^0\d{9,10}$/.test(d) ? { err: '', val: d } : { err: '電話番号を数字で入力してください（例：09012345678）', val: v };
+  }
+  if (f.type === 'zip') {
+    const d = h.replace(/[-\s]/g, '');
+    return /^\d{7}$/.test(d) ? { err: '', val: d.slice(0, 3) + '-' + d.slice(3) } : { err: '7桁の数字で入力してください', val: v };
+  }
+  if (f.type === 'date8') {
+    const d = h.replace(/[^\d]/g, '');
+    const y = +d.slice(0, 4), m = +d.slice(4, 6), day = +d.slice(6, 8);
+    const dt = new Date(y, m - 1, day);
+    const ok = /^\d{8}$/.test(d) && dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === day && y >= 1920 && dt < new Date();
+    return ok ? { err: '', val: d.slice(0, 4) + '/' + d.slice(4, 6) + '/' + d.slice(6, 8) } : { err: '8桁の数字で、正しい日付を入力してください（例：19900405）', val: v };
+  }
+  if (f.type === 'email') {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(h) ? { err: '', val: h } : { err: 'メールアドレスの形を確認してください', val: v };
+  }
+  return { err: '', val: v };
+}
+
 function validate(a) {
   const errs = {};
   FIELDS.forEach(f => {
     if (!f.k) return;
-    const v = f.type === 'file' ? picked[f.k] : a[f.k];
-    if (!v) { if (f.req) errs[f.k] = f.type === 'file' ? '写真を選んでください' : (f.type === 'radio' || f.type === 'check') ? '選択してください' : '入力してください'; return; }
-    if (f.type === 'file') return;
-    const h = toHalf(v);
-    if (f.type === 'num') {
-      if (!/^\d+$/.test(h)) errs[f.k] = '数字で入力してください';
-      else if (+h < f.min || +h > f.max) errs[f.k] = f.min + '〜' + f.max + 'の数字で入力してください';
-      else a[f.k] = String(+h);
-    } else if (f.type === 'tel') {
-      const d = h.replace(/[-\s()]/g, '');
-      if (!/^0\d{9,10}$/.test(d)) errs[f.k] = '電話番号を数字で入力してください（例：09012345678）'; else a[f.k] = d;
-    } else if (f.type === 'zip') {
-      const d = h.replace(/[-\s]/g, '');
-      if (!/^\d{7}$/.test(d)) errs[f.k] = '7桁の数字で入力してください'; else a[f.k] = d.slice(0, 3) + '-' + d.slice(3);
-    } else if (f.type === 'date8') {
-      const d = h.replace(/[^\d]/g, '');
-      const y = +d.slice(0, 4), m = +d.slice(4, 6), day = +d.slice(6, 8);
-      const dt = new Date(y, m - 1, day);
-      const ok = /^\d{8}$/.test(d) && dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === day && y >= 1920 && dt < new Date();
-      if (!ok) errs[f.k] = '8桁の数字で、正しい日付を入力してください（例：19900405）';
-      else a[f.k] = d.slice(0, 4) + '/' + d.slice(4, 6) + '/' + d.slice(6, 8);
-    } else if (f.type === 'email') {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(h)) errs[f.k] = 'メールアドレスの形を確認してください'; else a[f.k] = h;
-    }
+    const r = checkOne(f, a[f.k]);
+    if (r.err) errs[f.k] = r.err; else if (f.type !== 'file') a[f.k] = r.val;
   });
   return errs;
+}
+
+// 入力中の見た目：正しく入れた必須項目にチェック、途中の項目は打ち終わったら（showErr）エラーを出す
+function refreshField(form, f, showErr) {
+  const r = checkOne(f, collect(form)[f.k]);
+  const box = document.querySelector('.field[data-k="' + CSS.escape(f.k) + '"]');
+  if (!box) return;
+  box.classList.toggle('ok', f.req && !r.err && !r.empty);
+  if (showErr) setErr(f.k, r.empty ? '' : r.err);
+  else if (!r.err) setErr(f.k, '');
+  refreshCount(form);
+}
+
+function refreshCount(form) {
+  const a = collect(form);
+  const req = FIELDS.filter(f => f.k && f.req);
+  const ok = req.filter(f => { const r = checkOne(f, a[f.k]); return !r.err && !r.empty; }).length;
+  const el = $('reqCount');
+  el.textContent = ok === req.length ? '必須項目はすべて入力できました ✓' : '必須項目 ' + ok + ' / ' + req.length + ' 入力済み';
+  el.classList.toggle('all', ok === req.length);
+}
+
+// 郵便番号から住所を入れる（zipcloud）
+let zipFilled = '';
+function lookupZip(form) {
+  const zip = toHalf(form.elements['郵便番号'].value).replace(/[^\d]/g, '');
+  const addr = form.elements['住所'];
+  const msg = document.querySelector('.field[data-k="郵便番号"] .zipmsg');
+  if (zip.length !== 7) { msg.textContent = ''; return; }
+  msg.textContent = '住所を探しています…';
+  const cb = 'zipcb' + Date.now();
+  const s = document.createElement('script');
+  const cleanup = () => { delete window[cb]; s.remove(); };
+  const timer = setTimeout(() => { cleanup(); msg.textContent = '住所を自動で入れられませんでした。手で入力してください。'; }, 6000);
+  window[cb] = res => {
+    clearTimeout(timer); cleanup();
+    const r = res && res.results && res.results[0];
+    if (!r) { msg.textContent = 'この郵便番号の住所が見つかりませんでした。番号を確認してください。'; return; }
+    const base = r.address1 + r.address2 + r.address3;
+    // 空欄か、前に自動で入れたままなら上書きする（手で書いた住所は消さない）
+    if (!addr.value.trim() || addr.value.trim() === zipFilled) {
+      addr.value = base; zipFilled = base;
+      msg.textContent = '住所を入れました。続けて番地・建物名・部屋番号を入力してください。';
+      addr.focus(); addr.setSelectionRange(base.length, base.length);
+      saveDraft(form);
+    } else {
+      msg.textContent = '郵便番号の住所：' + base + '（ご住所の欄は書きかえていません）';
+    }
+  };
+  s.src = 'https://zipcloud.ibsnet.co.jp/api/search?zipcode=' + zip + '&callback=' + cb;
+  s.onerror = () => { clearTimeout(timer); cleanup(); msg.textContent = '住所を自動で入れられませんでした。手で入力してください。'; };
+  document.head.appendChild(s);
 }
 
 // 写真を軽くしてから送る（長い辺 1800px・JPEG）。縮められない形式はそのまま送る
